@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ai::AiModel;
+use crate::ai::Model;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Backend {
@@ -8,7 +8,7 @@ pub enum Backend {
     OpenAI(crate::ai::openai::OpenAIModel),
 }
 
-impl AiModel for Backend {
+impl Model for Backend {
     async fn reply(&self, conversation: &Conversation) -> anyhow::Result<String> {
         match self {
             Backend::OpenAI(model) => model.reply(conversation).await,
@@ -31,7 +31,7 @@ impl ChatMessage {
     pub fn new(content: String, from: Option<String>) -> Self {
         Self {
             content,
-            from: from.map(Role::User).unwrap_or(Role::Assistant),
+            from: from.map_or(Role::Assistant, Role::User),
         }
     }
 }

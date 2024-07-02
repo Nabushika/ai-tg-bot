@@ -1,5 +1,5 @@
 use crate::models::Conversation;
-use crate::{ai::AiModel, Role};
+use crate::{ai::Model, Role};
 
 use anyhow::Context;
 use async_openai::types::{
@@ -26,7 +26,7 @@ impl OpenAIModel {
     }
 }
 
-impl AiModel for OpenAIModel {
+impl Model for OpenAIModel {
     async fn reply(&self, conversation: &Conversation) -> anyhow::Result<String> {
         let mut msgs = Vec::with_capacity(
             conversation.messages.len() + usize::from(conversation.system.is_some()),

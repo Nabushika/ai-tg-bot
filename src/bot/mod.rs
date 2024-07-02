@@ -32,6 +32,7 @@ pub fn handle_command(msg: &str, mut state: &mut State) -> Result<CommandResult>
     let failed_command = Ok(CommandResult::ReplyToUser(format!(
         "Command `{cmd}` requires you to be in a conversation!"
     )));
+    #[allow(clippy::match_wildcard_for_single_variants)]
     let conversation = match &mut state {
         State::ChatDialogue { conversation, .. } => Some(conversation),
         _ => None,

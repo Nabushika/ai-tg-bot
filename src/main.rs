@@ -1,3 +1,4 @@
+#![warn(clippy::all, clippy::pedantic)]
 use teloxide::prelude::*;
 use teloxide::types::{BotCommand, ChatAction, ReplyMarkup};
 
@@ -8,9 +9,9 @@ use std::time::Duration;
 mod ai;
 mod bot;
 mod models;
-use ai::AiModel;
+use ai::Model;
 use bot::CommandResult;
-use models::*;
+use models::{Backend, ChatMessage, Conversation, Role, State};
 
 const OPENAI_API_URL: &str = "http://localhost:5000/v1";
 
@@ -48,7 +49,7 @@ async fn typing_while<T>(
         }
     };
     tokio::select! {
-        _ = typing_fut => { unreachable!() },
+        () = typing_fut => { unreachable!() },
         res = fut => res,
     }
 }
@@ -62,8 +63,7 @@ async fn handle_msg(
     let chat_id = msg.chat.id;
     let username = msg
         .from()
-        .map(|user| user.full_name())
-        .unwrap_or_else(|| "UNKNOWN".into());
+        .map_or_else(|| "UNKNOWN".into(), teloxide::types::User::full_name);
     println!("{}: {}", username, msg.text().unwrap_or(""));
     let group_chat = msg.chat.is_group();
     let Some(text) = msg.text() else {
@@ -113,6 +113,8 @@ async fn handle_msg(
         }
         // Not a /start command
         let result = bot::handle_command(text, &mut state)?;
+
+        #[allow(clippy::match_wildcard_for_single_variants)]
         match result {
             //CommandResult::DoNothing => {}
             CommandResult::ReplyToUser(msg) => {
@@ -160,7 +162,7 @@ async fn handle_msg(
     conversation
         .messages
         .push(ChatMessage::new(response.clone(), None));
-    println!("BOT: {}", response);
+    println!("BOT: {response}");
     bot.send_message(chat_id, response).await?;
     Ok(state)
 }
@@ -183,7 +185,7 @@ async fn main() -> anyhow::Result<()> {
 
     let openai_models = vec!["turboderp_Llama-3-70B-Instruct-exl2_5.0bpw".to_string()]; // Add more as needed
 
-    println!("OpenAI models: {:?}", openai_models);
+    println!("OpenAI models: {openai_models:?}");
 
     let chats = std::fs::read("chats.json")
         .ok()
@@ -194,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
     let my_chats = Arc::clone(&chats);
 
     tokio::select! {
-    _ = teloxide::repl(bot, move |bot: Bot, msg: Message| {
+    () = teloxide::repl(bot, move |bot: Bot, msg: Message| {
         let ch = Arc::clone(&chats);
         let openai_models = openai_models.clone();
         let default_state = State::ChatDialogue {
@@ -216,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }) => {},
     _ = tokio::signal::ctrl_c() => {
-            println!("Shutting down!")
+            println!("Shutting down!");
         }
     };
 
