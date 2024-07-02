@@ -8,9 +8,10 @@ edition = "2021"
 [dependencies]
 anyhow = { version = "1.0.82", features = ["backtrace"] }
 async-openai = "0.23.3"
+chrono = "0.4.38"
 futures-util = "0.3.30"
 ollama-rs = { version = "0.1.9", features = ["stream", "tokio", "chat-history"] }
 serde = "1.0.203"
 serde_json = "1.0.118"
 teloxide = { version = "0.12.2", features = ["full"] }
-tokio = { version = "1.37.0", features = ["full"] }
+tokio = { version = "1.37.0", features = ["full", "sync"] }

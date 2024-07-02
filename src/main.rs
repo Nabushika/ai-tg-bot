@@ -1,62 +1,168 @@
-use async_openai::types::{
-    ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestSystemMessageArgs,
-    ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
-};
-use async_openai::{config::OpenAIConfig, Client as OpenAIClient};
-use ollama_rs::generation::chat::request::ChatMessageRequest;
-use ollama_rs::generation::chat::ChatMessage as OllamaChatMessage;
-use ollama_rs::Ollama;
-use serde::{Deserialize, Serialize};
 use teloxide::prelude::*;
-use teloxide::types::ChatAction;
+use teloxide::types::{BotCommand, ChatAction, ReplyMarkup};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Backend {
-    Ollama(String), // String is the model name
-    OpenAI(String), // String is the model name
-}
+mod ai;
+mod bot;
+mod models;
+use ai::AiModel;
+use bot::CommandResult;
+use models::*;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum State {
-    Start,
-    ChatDialogue {
-        backend: Backend,
-        messages: Vec<String>, // Store messages as strings for compatibility
-        system: Option<String>,
-    },
-}
+const OPENAI_API_URL: &str = "http://localhost:5000/v1";
 
-impl Default for State {
-    fn default() -> Self {
-        State::Start
-    }
-}
-
-fn models_to_options(
-    ollama_models: Vec<String>,
-    openai_models: Vec<String>,
-) -> teloxide::types::ReplyMarkup {
-    let mut keyboard = ollama_models
+fn models_to_options(openai_models: Vec<String>) -> teloxide::types::ReplyMarkup {
+    let keyboard = openai_models
         .into_iter()
         .map(|model| {
             vec![teloxide::types::KeyboardButton::new(format!(
-                "/start ollama {model}"
+                "/start openai {model}"
             ))]
         })
         .collect::<Vec<_>>();
 
-    keyboard.extend(openai_models.into_iter().map(|model| {
-        vec![teloxide::types::KeyboardButton::new(format!(
-            "/start openai {model}"
-        ))]
-    }));
-
     teloxide::types::KeyboardMarkup::new(keyboard)
         .one_time_keyboard(true)
         .into()
+}
+
+const COMMANDS: &[(&str, &str)] = &[
+    ("reset", "Resets the conversation and system message"),
+    ("redo", "Forces the bot to re-type the last message"),
+    ("system", "Set the system message for current conversation"),
+    ("start", "Start a new conversation. Requires model name."),
+];
+
+async fn typing_while<T>(
+    bot: &Bot,
+    chat_id: ChatId,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
+    let typing_fut = async {
+        loop {
+            let _ = bot.send_chat_action(chat_id, ChatAction::Typing).await;
+            tokio::time::sleep(Duration::from_secs(4)).await;
+        }
+    };
+    tokio::select! {
+        _ = typing_fut => { unreachable!() },
+        res = fut => res,
+    }
+}
+
+async fn handle_msg(
+    bot: &Bot,
+    msg: Message,
+    models: Vec<String>,
+    mut state: State,
+) -> anyhow::Result<State> {
+    let chat_id = msg.chat.id;
+    let username = msg
+        .from()
+        .map(|user| user.full_name())
+        .unwrap_or_else(|| "UNKNOWN".into());
+    println!("{}: {}", username, msg.text().unwrap_or(""));
+    let group_chat = msg.chat.is_group();
+    let Some(text) = msg.text() else {
+        bot.send_message(chat_id, "This bot only supports text messages! (for now)")
+            .await?;
+        return Ok(state);
+    };
+    if text.starts_with('/') {
+        // handle command
+        // (unless it's /start)
+
+        // Yes I know this is messy, but... eh
+        if let Some(command) = text.strip_prefix("/start") {
+            let command = command.strip_prefix(' ').unwrap_or(command);
+            let parts: Vec<&str> = command.split_whitespace().collect();
+            match parts[..] {
+                ["openai", model] => {
+                    if models.contains(&model.to_string()) {
+                        state = State::ChatDialogue {
+                            backend: Backend::OpenAI(ai::openai::OpenAIModel::new(
+                                OPENAI_API_URL.to_string(),
+                                model.to_string(),
+                            )),
+                            conversation: Conversation::default(),
+                        };
+                        bot.send_message(
+                            chat_id,
+                            format!("Chosen model {model}! You can start chatting now."),
+                        )
+                        .reply_markup(ReplyMarkup::kb_remove())
+                        .await?;
+                        bot.set_my_commands(
+                            COMMANDS
+                                .iter()
+                                .map(|(cmd, desc)| BotCommand::new(*cmd, *desc)),
+                        )
+                        .await?;
+                    }
+                }
+                _ => {
+                    bot.send_message(chat_id, "Please choose a model")
+                        .reply_markup(models_to_options(models.clone()))
+                        .await?;
+                }
+            }
+            return Ok(state);
+        }
+        // Not a /start command
+        let result = bot::handle_command(text, &mut state)?;
+        match result {
+            //CommandResult::DoNothing => {}
+            CommandResult::ReplyToUser(msg) => {
+                bot.send_message(chat_id, msg).await?;
+            }
+            CommandResult::RegenerateLastMessage => match &mut state {
+                State::ChatDialogue {
+                    backend,
+                    conversation,
+                } => {
+                    let result = typing_while(bot, chat_id, backend.reply(conversation)).await?;
+                    bot.send_message(chat_id, &result).await?;
+                    conversation.messages.push(ChatMessage::new(result, None));
+                }
+
+                _ => unreachable!("RegenerateLastMessage should require conversation"),
+            },
+        }
+        return Ok(state);
+    }
+    // Non-command message, handle here
+    let State::ChatDialogue {
+        backend,
+        conversation,
+    } = &mut state
+    else {
+        bot.send_message(
+            chat_id,
+            "Please start a conversation with /start before messaging!",
+        )
+        .await?;
+        return Ok(state);
+    };
+    if group_chat {
+        let named_message = format!("{username}: {text}");
+        conversation
+            .messages
+            .push(ChatMessage::new(named_message, Some(username)));
+    } else {
+        conversation
+            .messages
+            .push(ChatMessage::new(text.into(), Some(username)));
+    }
+    let response = typing_while(bot, chat_id, backend.reply(conversation)).await?;
+    conversation
+        .messages
+        .push(ChatMessage::new(response.clone(), None));
+    println!("BOT: {}", response);
+    bot.send_message(chat_id, response).await?;
+    Ok(state)
 }
 
 #[tokio::main]
@@ -69,24 +175,20 @@ async fn main() -> anyhow::Result<()> {
     let bot = Bot::new(tg_bot_token);
 
     // Set up the OLLAMA model
-    let ollama = Ollama::new("http://localhost".into(), 11434);
+    //let ollama = Ollama::new("http://localhost".into(), 11434);
 
     // Set up OpenAI client
-    let openai_config = OpenAIConfig::new().with_api_base("http://localhost:5000/v1");
-    let openai_client = OpenAIClient::with_config(openai_config);
+    //let openai_config = OpenAIConfig::new().with_api_base("http://localhost:5000/v1");
+    //let openai_client = OpenAIClient::with_config(openai_config);
 
-    let ollama_models = ollama
-        .list_local_models()
-        .await?
-        .into_iter()
-        .map(|model| model.name)
-        .collect::<Vec<_>>();
+    let openai_models = vec!["turboderp_Llama-3-70B-Instruct-exl2_5.0bpw".to_string()]; // Add more as needed
 
-    let openai_models = vec!["turboderp_Llama-3-70B-Instruct-exl2_5.0bpw".into()]; // Add more as needed
+    println!("OpenAI models: {:?}", openai_models);
 
     let chats = std::fs::read("chats.json")
         .ok()
         .and_then(|conts| serde_json::from_slice::<HashMap<ChatId, State>>(&conts).ok())
+        .inspect(|chats| println!("Loaded {} chats!", chats.len()))
         .unwrap_or_default();
     let chats = Arc::new(Mutex::new(chats));
     let my_chats = Arc::clone(&chats);
@@ -94,134 +196,22 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
     _ = teloxide::repl(bot, move |bot: Bot, msg: Message| {
         let ch = Arc::clone(&chats);
-        let ollama_models = ollama_models.clone();
         let openai_models = openai_models.clone();
-        let ollama = ollama.clone();
-        let openai_client = openai_client.clone();
+        let default_state = State::ChatDialogue {
+                backend: Backend::OpenAI(ai::openai::OpenAIModel::new(
+                    OPENAI_API_URL.into(),
+                    openai_models[0].clone())),
+                conversation: Conversation::default(),
+            };
         async move {
             let chat_id = msg.chat.id;
-            let mut state = ch.lock().unwrap().remove(&chat_id).unwrap_or_default();
-            let send_message = match state {
-                State::Start => {
-                    if let Some(text) = msg.text() {
-                        if let Some(command) = text.strip_prefix("/start ") {
-                            let parts: Vec<&str> = command.split_whitespace().collect();
-                            if parts.len() == 2 {
-                                let backend = parts[0];
-                                let model = parts[1];
-                                match backend {
-                                    "ollama" if ollama_models.contains(&model.to_string()) => {
-                                        state = State::ChatDialogue {
-                                            backend: Backend::Ollama(model.to_string()),
-                                            messages: vec![],
-                                            system: None,
-                                        };
-                                        Some(format!("Chosen Ollama model {model}! You can start chatting now."))
-                                    }
-                                    "openai" if openai_models.contains(&model.to_string()) => {
-                                        state = State::ChatDialogue {
-                                            backend: Backend::OpenAI(model.to_string()),
-                                            messages: vec![],
-                                            system: None,
-                                        };
-                                        Some(format!("Chosen OpenAI model {model}! You can start chatting now."))
-                                    }
-                                    _ => Some("Invalid model or backend. Please choose again.".to_string()),
-                                }
-                            } else {
-                                Some("Invalid command format. Use '/start backend model'".to_string())
-                            }
-                        } else {
-                            bot.send_message(chat_id, "Please choose a model")
-                                .reply_markup(models_to_options(ollama_models.clone(), openai_models.clone()))
-                                .await?;
-                            None
-                        }
-                    } else {
-                        Some("This bot only accepts text messages (for now)!".into())
-                    }
+            let state = ch.lock().unwrap().get(&chat_id).cloned().unwrap_or_else(|| default_state.clone());
+            match handle_msg(&bot, msg, openai_models, state).await {
+                    Ok(new_state) => {
+                        ch.lock().unwrap().insert(chat_id, new_state);
+                    },
+                    Err(e) => eprintln!("Error on handle_msg: {e:?}"),
                 }
-                State::ChatDialogue {
-                    ref backend,
-                    ref mut messages,
-                    ref mut system,
-                } => {
-                    if let Some(text) = msg.text() {
-                        if text == "/reset" {
-                            state = State::Start;
-                            Some("Conversation reset. Choose a model to start again.".into())
-                        } else if let Some(sys_cmd) = text.strip_prefix("/system ") {
-                            *system = Some(sys_cmd.to_string());
-                            Some("Set system message (only works with OpenAI backend for now)".into())
-                        } else {
-                            messages.push(text.to_string());
-                            bot.send_chat_action(chat_id, ChatAction::Typing).await?;
-
-                            let response = match backend {
-                                Backend::Ollama(model) => {
-                                    let ollama_messages = messages.iter()
-                                        .enumerate()
-                                        .map(|(i, m)| {
-                                            if i % 2 == 0 {
-                                                OllamaChatMessage::user(m.to_string())
-                                            } else {
-                                                OllamaChatMessage::assistant(m.to_string())
-                                            }
-                                        })
-                                        .collect::<Vec<_>>();
-
-                                    let response = ollama
-                                        .send_chat_messages(ChatMessageRequest::new(
-                                            model.clone(),
-                                            ollama_messages,
-                                        ))
-                                        .await.unwrap();
-                                    response.message.unwrap().content
-                                }
-                                Backend::OpenAI(model) => {
-                                    let mut openai_messages = messages.iter()
-                                        .enumerate()
-                                        .map(|(i, m)| {
-                                            if i % 2 == 0 {
-                                                ChatCompletionRequestUserMessageArgs::default()
-                                                    .content(m.to_string())
-                                                    .build().unwrap().into()
-                                            } else {
-                                                ChatCompletionRequestAssistantMessageArgs::default()
-                                                    .content(m.to_string())
-                                                    .build().unwrap().into()
-                                            }
-                                        })
-                                        .collect::<Vec<_>>();
-                                    if let Some(system) = system {
-                                        openai_messages.insert(0, ChatCompletionRequestSystemMessageArgs::default().content(system.to_string()).build().unwrap().into());
-                                    }
-
-                                    let request = CreateChatCompletionRequestArgs::default()
-                                        .model(model)
-                                        .messages(openai_messages)
-                                        .build()
-                                        .unwrap();
-
-                                    let response = openai_client.chat().create(request).await.unwrap();
-                                    response.choices[0].message.content.clone().unwrap_or_default()
-                                }
-                            };
-
-                            messages.push(response.clone());
-                            Some(response)
-                        }
-                    } else {
-                        Some("This bot only accepts text messages (for now)!".into())
-                    }
-                }
-            };
-            if let Some(send) = send_message {
-                println!("{}: {}", msg.from().map(|user| user.full_name()).unwrap_or_else(|| "UNKNOWN".into()), msg.text().unwrap_or(""));
-                println!("BOT: {}", send);
-                bot.send_message(chat_id, send).await?;
-            }
-            ch.lock().unwrap().insert(chat_id, state);
             Ok(())
         }
     }) => {},
