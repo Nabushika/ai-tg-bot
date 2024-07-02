@@ -127,6 +127,7 @@ async fn handle_msg(
                 } => {
                     let result = typing_while(bot, chat_id, backend.reply(conversation)).await?;
                     bot.send_message(chat_id, &result).await?;
+                    println!("BOT: {result}");
                     conversation.messages.push(ChatMessage::new(result, None));
                 }
 
