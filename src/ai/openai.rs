@@ -1,4 +1,4 @@
-use crate::models::Conversation;
+use crate::models::{ChatMessage, Conversation};
 use crate::{ai::Model, Role};
 
 use anyhow::Context;
@@ -33,23 +33,23 @@ impl OpenAIModel {
             model,
         }
     }
-}
 
-impl Model for OpenAIModel {
-    async fn reply(&self, conversation: &Conversation) -> anyhow::Result<String> {
-        let mut msgs = Vec::with_capacity(
-            conversation.messages.len() + usize::from(conversation.system.is_some()),
-        );
-        if let Some(system) = &conversation.system {
+    async fn reply_with_system(
+        &self,
+        system: Option<&str>,
+        conversation: &[ChatMessage],
+    ) -> anyhow::Result<String> {
+        let mut msgs = Vec::with_capacity(conversation.len() + usize::from(system.is_some()));
+        if let Some(system) = &system {
             msgs.push(
                 ChatCompletionRequestSystemMessageArgs::default()
-                    .content(system.clone())
+                    .content(system.to_owned())
                     .build()
                     .unwrap()
                     .into(),
             );
         }
-        msgs.extend(conversation.messages.iter().map(|msg| {
+        msgs.extend(conversation.iter().map(|msg| {
             match &msg.from {
                 Role::Assistant => ChatCompletionRequestAssistantMessageArgs::default()
                     .content(msg.content.clone())
@@ -79,6 +79,18 @@ impl Model for OpenAIModel {
             .nth(0)
             .and_then(|msg| msg.message.content)
             .context("OpenAI client returned empty response!")
+    }
+}
+
+impl Model for OpenAIModel {
+    async fn reply(&self, conversation: &Conversation) -> anyhow::Result<String> {
+        self.reply_with_system(conversation.system.as_deref(), &conversation.messages)
+            .await
+    }
+    async fn description(&self, conversation: &Conversation) -> anyhow::Result<String> {
+        const DESCRIPTION_SYSTEM_MSG: &str = "Describe the following chat dialogue. Be as concise as possible, limiting your summary to one sentence if at all possible.";
+        self.reply_with_system(Some(DESCRIPTION_SYSTEM_MSG), &conversation.messages)
+            .await
     }
 }
 

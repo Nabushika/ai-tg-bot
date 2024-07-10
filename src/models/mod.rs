@@ -14,6 +14,11 @@ impl Model for Backend {
             Backend::OpenAI(model) => model.reply(conversation).await,
         }
     }
+    async fn description(&self, conversation: &Conversation) -> anyhow::Result<String> {
+        match self {
+            Backend::OpenAI(model) => model.description(conversation).await,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -53,6 +58,13 @@ impl UserState {
         self.current_conversation
             .and_then(|idx| self.conversations.get_mut(idx))
     }
+    pub fn get_or_create_conversation(&mut self) -> &mut Conversation {
+        let idx = self
+            .current_conversation
+            .unwrap_or(self.conversations.len());
+        self.current_conversation = Some(idx);
+        self.conversations.get_mut(idx).unwrap()
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -66,6 +78,7 @@ pub struct Conversation {
     pub name: String,
     pub messages: Vec<ChatMessage>,
     pub system: Option<String>,
+    pub description: Option<String>,
     //pub character: Option<String>,
 }
 
@@ -78,6 +91,17 @@ impl Default for Conversation {
             ),
             messages: vec![],
             system: None,
+            description: None,
+        }
+    }
+}
+
+impl std::fmt::Display for Conversation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(desc) = &self.description {
+            write!(f, "{}: {}", self.name, desc)
+        } else {
+            write!(f, "{}", self.name)
         }
     }
 }

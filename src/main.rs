@@ -18,13 +18,6 @@ const OPENAI_API_URL: &str = "http://localhost:5000/v1";
 const GROQ_API_URL: &str = "https://api.groq.com/openai/v1";
 const GROQ_MODEL: &str = "llama3-70b-8192";
 
-const COMMANDS: &[(&str, &str)] = &[
-    ("reset", "Resets the conversation and system message"),
-    ("redo", "Forces the bot to re-type the last message"),
-    ("system", "Set the system message for current conversation"),
-    ("start", "Start a new conversation. Requires model name."),
-];
-
 async fn typing_while<T>(
     bot: &Bot,
     chat_id: ChatId,
@@ -75,6 +68,14 @@ async fn handle_msg(
                 bot.send_message(chat_id, &result).await?;
                 println!("BOT: {result}");
                 conversation.messages.push(ChatMessage::new(result, None));
+            }
+            CommandResult::GenerateDescription(conversation) => {
+                let result =
+                    typing_while(bot, chat_id, default_backend.description(conversation)).await?;
+                bot.send_message(chat_id, format!("New conversation description: {result}"))
+                    .await?;
+                println!("New description for chat {}: {}", conversation.name, result);
+                conversation.description = Some(result);
             }
         }
         return Ok(state);
@@ -175,7 +176,11 @@ async fn main() -> anyhow::Result<()> {
                     Ok(new_state) => {
                         ch.lock().unwrap().insert(chat_id, new_state);
                     },
-                    Err(e) => eprintln!("Error on handle_msg: {e:?}"),
+                    Err(e) => {
+                        let err_msg = format!("⚠️ Error on handle_msg: {e:?}");
+                        eprintln!("{err_msg}");
+                        let _ = bot.send_message(chat_id, err_msg).await;
+                    }
                 }
             Ok(())
         }
