@@ -9,11 +9,14 @@ use std::time::Duration;
 mod ai;
 mod bot;
 mod models;
+use ai::openai::OpenAIModel;
 use ai::Model;
 use bot::CommandResult;
 use models::{Backend, ChatMessage, Conversation, Role, State};
 
 const OPENAI_API_URL: &str = "http://localhost:5000/v1";
+const GROQ_API_URL: &str = "https://api.groq.com/openai/v1";
+const GROQ_MODEL: &str = "llama3-70b-8192";
 
 fn models_to_options(openai_models: Vec<String>) -> teloxide::types::ReplyMarkup {
     let keyboard = openai_models
@@ -196,14 +199,31 @@ async fn main() -> anyhow::Result<()> {
     let chats = Arc::new(Mutex::new(chats));
     let my_chats = Arc::clone(&chats);
 
+    let groq_token = std::env::var("GROQ_TOKEN").ok();
+    let default_backend = groq_token.map_or_else(
+        || {
+            println!("Using default local OpenAI backend");
+            Backend::OpenAI(OpenAIModel::new(
+                OPENAI_API_URL.into(),
+                openai_models[0].clone(),
+            ))
+        },
+        |token| {
+            println!("Using Groq backend");
+            Backend::OpenAI(OpenAIModel::new_with_token(
+                GROQ_API_URL.into(),
+                GROQ_MODEL.into(),
+                token,
+            ))
+        },
+    );
+
     tokio::select! {
     () = teloxide::repl(bot, move |bot: Bot, msg: Message| {
         let ch = Arc::clone(&chats);
         let openai_models = openai_models.clone();
         let default_state = State::ChatDialogue {
-                backend: Backend::OpenAI(ai::openai::OpenAIModel::new(
-                    OPENAI_API_URL.into(),
-                    openai_models[0].clone())),
+                backend: default_backend.clone(),
                 conversation: Conversation::default(),
             };
         async move {

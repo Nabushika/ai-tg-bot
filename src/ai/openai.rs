@@ -24,6 +24,15 @@ impl OpenAIModel {
             model,
         }
     }
+    pub fn new_with_token(api_url: String, model: String, token: String) -> Self {
+        let config = OpenAIConfig::new()
+            .with_api_base(api_url)
+            .with_api_key(token.clone());
+        Self {
+            client: Client::with_config(config),
+            model,
+        }
+    }
 }
 
 impl Model for OpenAIModel {
@@ -82,16 +91,25 @@ mod client_ser {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(client.config().api_base())
+        use secrecy::ExposeSecret;
+        use serde::ser::SerializeTuple;
+        let config = client.config();
+        //let mut tup = serializer.serialize_tuple(2)?;
+        //tup.serialize_element(config.api_base())?;
+        //tup.serialize_element(config.api_key().expose_secret())?;
+        //tup.end()
+        let to_ser = (config.api_base(), config.api_key().expose_secret());
+        serde::Serialize::serialize(&to_ser, serializer)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Client<OpenAIConfig>, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let api_base: &str = serde::Deserialize::deserialize(deserializer)?;
-        Ok(Client::with_config(
-            OpenAIConfig::default().with_api_base(api_base),
-        ))
+        let (api_base, api_key): (&str, &str) = serde::Deserialize::deserialize(deserializer)?;
+        let config = OpenAIConfig::default()
+            .with_api_base(api_base)
+            .with_api_key(api_key);
+        Ok(Client::with_config(config))
     }
 }

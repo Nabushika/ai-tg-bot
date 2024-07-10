@@ -1272,6 +1272,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "ollama-rs",
+ "secrecy",
  "serde",
  "serde_json",
  "teloxide",
