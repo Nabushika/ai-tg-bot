@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::models::{Role, State};
+use crate::models::{Conversation, Role, UserState};
 
 // command => requirements
 // start => state, models? Tg bot for keyboard
@@ -19,24 +19,20 @@ use crate::models::{Role, State};
 // EVERYTHING NEEDED
 // tg bot, state(conversation), models??, ai bot??
 
-pub enum CommandResult {
+pub enum CommandResult<'a> {
     //DoNothing,
-    RegenerateLastMessage,
+    RegenerateLastMessage(&'a mut Conversation),
     ReplyToUser(String),
 }
 
 // Does not handle /start
-pub fn handle_command(msg: &str, mut state: &mut State) -> Result<CommandResult> {
+pub fn handle_command<'a>(msg: &str, state: &'a mut UserState) -> Result<CommandResult<'a>> {
     let (cmd, rest) = msg.split_once(' ').unwrap_or((msg, ""));
     // Only work in conversation
     let failed_command = Ok(CommandResult::ReplyToUser(format!(
         "Command `{cmd}` requires you to be in a conversation!"
     )));
-    #[allow(clippy::match_wildcard_for_single_variants)]
-    let conversation = match &mut state {
-        State::ChatDialogue { conversation, .. } => Some(conversation),
-        _ => None,
-    };
+    let conversation = state.get_current_conversation();
     match cmd {
         "/reset" => {
             let Some(conversation) = conversation else {
@@ -71,8 +67,7 @@ pub fn handle_command(msg: &str, mut state: &mut State) -> Result<CommandResult>
                     "Can only /redo if the last message is LlamaBot's!".into(),
                 ));
             };
-            conversation.messages.pop();
-            Ok(CommandResult::RegenerateLastMessage)
+            Ok(CommandResult::RegenerateLastMessage(conversation))
         }
         _ => Ok(CommandResult::ReplyToUser(format!(
             "Unknown command {cmd}."

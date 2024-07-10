@@ -36,18 +36,52 @@ impl ChatMessage {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct Conversation {
-    pub messages: Vec<ChatMessage>,
-    pub system: Option<String>,
+// new model with characters n conversations n stuff
+
+// TODO: probably shouldn't have to be `Clone`
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct UserState {
+    //pub backend: Option<Backend>,
+    pub conversations: Vec<Conversation>,
+    pub current_conversation: Option<usize>,
+    //pub characters: Vec<Character>,
+    pub ui_state: UIState,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub enum State {
+impl UserState {
+    pub fn get_current_conversation(&mut self) -> Option<&mut Conversation> {
+        self.current_conversation
+            .and_then(|idx| self.conversations.get_mut(idx))
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub enum UIState {
     #[default]
-    Start,
-    ChatDialogue {
-        backend: Backend,
-        conversation: Conversation,
-    },
+    Chatting,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Conversation {
+    pub name: String,
+    pub messages: Vec<ChatMessage>,
+    pub system: Option<String>,
+    //pub character: Option<String>,
+}
+
+impl Default for Conversation {
+    fn default() -> Self {
+        Self {
+            name: format!(
+                "Conversation from {}",
+                chrono::Utc::now().format("%d/%m/%Y %H:%M")
+            ),
+            messages: vec![],
+            system: None,
+        }
+    }
+}
+
+pub struct Character {
+    pub name: String,
 }

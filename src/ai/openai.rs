@@ -27,7 +27,7 @@ impl OpenAIModel {
     pub fn new_with_token(api_url: String, model: String, token: String) -> Self {
         let config = OpenAIConfig::new()
             .with_api_base(api_url)
-            .with_api_key(token.clone());
+            .with_api_key(token);
         Self {
             client: Client::with_config(config),
             model,
@@ -92,12 +92,7 @@ mod client_ser {
         S: serde::Serializer,
     {
         use secrecy::ExposeSecret;
-        use serde::ser::SerializeTuple;
         let config = client.config();
-        //let mut tup = serializer.serialize_tuple(2)?;
-        //tup.serialize_element(config.api_base())?;
-        //tup.serialize_element(config.api_key().expose_secret())?;
-        //tup.end()
         let to_ser = (config.api_base(), config.api_key().expose_secret());
         serde::Serialize::serialize(&to_ser, serializer)
     }

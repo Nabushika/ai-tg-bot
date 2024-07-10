@@ -1,6 +1,6 @@
 #![warn(clippy::all, clippy::pedantic)]
 use teloxide::prelude::*;
-use teloxide::types::{BotCommand, ChatAction, ReplyMarkup};
+use teloxide::types::ChatAction;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,26 +12,11 @@ mod models;
 use ai::openai::OpenAIModel;
 use ai::Model;
 use bot::CommandResult;
-use models::{Backend, ChatMessage, Conversation, Role, State};
+use models::{Backend, ChatMessage, Role, UserState};
 
 const OPENAI_API_URL: &str = "http://localhost:5000/v1";
 const GROQ_API_URL: &str = "https://api.groq.com/openai/v1";
 const GROQ_MODEL: &str = "llama3-70b-8192";
-
-fn models_to_options(openai_models: Vec<String>) -> teloxide::types::ReplyMarkup {
-    let keyboard = openai_models
-        .into_iter()
-        .map(|model| {
-            vec![teloxide::types::KeyboardButton::new(format!(
-                "/start openai {model}"
-            ))]
-        })
-        .collect::<Vec<_>>();
-
-    teloxide::types::KeyboardMarkup::new(keyboard)
-        .one_time_keyboard(true)
-        .into()
-}
 
 const COMMANDS: &[(&str, &str)] = &[
     ("reset", "Resets the conversation and system message"),
@@ -60,9 +45,9 @@ async fn typing_while<T>(
 async fn handle_msg(
     bot: &Bot,
     msg: Message,
-    models: Vec<String>,
-    mut state: State,
-) -> anyhow::Result<State> {
+    mut state: UserState,
+    default_backend: &Backend,
+) -> anyhow::Result<UserState> {
     let chat_id = msg.chat.id;
     let username = msg
         .from()
@@ -76,45 +61,6 @@ async fn handle_msg(
     };
     if text.starts_with('/') {
         // handle command
-        // (unless it's /start)
-
-        // Yes I know this is messy, but... eh
-        if let Some(command) = text.strip_prefix("/start") {
-            let command = command.strip_prefix(' ').unwrap_or(command);
-            let parts: Vec<&str> = command.split_whitespace().collect();
-            match parts[..] {
-                ["openai", model] => {
-                    if models.contains(&model.to_string()) {
-                        state = State::ChatDialogue {
-                            backend: Backend::OpenAI(ai::openai::OpenAIModel::new(
-                                OPENAI_API_URL.to_string(),
-                                model.to_string(),
-                            )),
-                            conversation: Conversation::default(),
-                        };
-                        bot.send_message(
-                            chat_id,
-                            format!("Chosen model {model}! You can start chatting now."),
-                        )
-                        .reply_markup(ReplyMarkup::kb_remove())
-                        .await?;
-                        bot.set_my_commands(
-                            COMMANDS
-                                .iter()
-                                .map(|(cmd, desc)| BotCommand::new(*cmd, *desc)),
-                        )
-                        .await?;
-                    }
-                }
-                _ => {
-                    bot.send_message(chat_id, "Please choose a model")
-                        .reply_markup(models_to_options(models.clone()))
-                        .await?;
-                }
-            }
-            return Ok(state);
-        }
-        // Not a /start command
         let result = bot::handle_command(text, &mut state)?;
 
         #[allow(clippy::match_wildcard_for_single_variants)]
@@ -123,28 +69,18 @@ async fn handle_msg(
             CommandResult::ReplyToUser(msg) => {
                 bot.send_message(chat_id, msg).await?;
             }
-            CommandResult::RegenerateLastMessage => match &mut state {
-                State::ChatDialogue {
-                    backend,
-                    conversation,
-                } => {
-                    let result = typing_while(bot, chat_id, backend.reply(conversation)).await?;
-                    bot.send_message(chat_id, &result).await?;
-                    println!("BOT: {result}");
-                    conversation.messages.push(ChatMessage::new(result, None));
-                }
-
-                _ => unreachable!("RegenerateLastMessage should require conversation"),
-            },
+            CommandResult::RegenerateLastMessage(conversation) => {
+                let result =
+                    typing_while(bot, chat_id, default_backend.reply(conversation)).await?;
+                bot.send_message(chat_id, &result).await?;
+                println!("BOT: {result}");
+                conversation.messages.push(ChatMessage::new(result, None));
+            }
         }
         return Ok(state);
     }
     // Non-command message, handle here
-    let State::ChatDialogue {
-        backend,
-        conversation,
-    } = &mut state
-    else {
+    let Some(conversation) = state.get_current_conversation() else {
         bot.send_message(
             chat_id,
             "Please start a conversation with /start before messaging!",
@@ -152,17 +88,15 @@ async fn handle_msg(
         .await?;
         return Ok(state);
     };
-    if group_chat {
-        let named_message = format!("{username}: {text}");
-        conversation
-            .messages
-            .push(ChatMessage::new(named_message, Some(username)));
+    let named_message = if group_chat {
+        format!("{username}: {text}")
     } else {
-        conversation
-            .messages
-            .push(ChatMessage::new(text.into(), Some(username)));
-    }
-    let response = typing_while(bot, chat_id, backend.reply(conversation)).await?;
+        text.into()
+    };
+    conversation
+        .messages
+        .push(ChatMessage::new(named_message, Some(username)));
+    let response = typing_while(bot, chat_id, default_backend.reply(conversation)).await?;
     conversation
         .messages
         .push(ChatMessage::new(response.clone(), None));
@@ -193,11 +127,23 @@ async fn main() -> anyhow::Result<()> {
 
     let chats = std::fs::read("chats.json")
         .ok()
-        .and_then(|conts| serde_json::from_slice::<HashMap<ChatId, State>>(&conts).ok())
+        .and_then(|conts| serde_json::from_slice::<HashMap<ChatId, UserState>>(&conts).ok())
         .inspect(|chats| println!("Loaded {} chats!", chats.len()))
         .unwrap_or_default();
     let chats = Arc::new(Mutex::new(chats));
-    let my_chats = Arc::clone(&chats);
+    let interval_saver_chats = Arc::clone(&chats);
+    let final_save_chats = Arc::clone(&chats);
+
+    let mut interval_saver = tokio::time::interval(Duration::from_secs(300));
+    tokio::task::spawn(async move {
+        loop {
+            interval_saver.tick().await;
+            let chats_ser = serde_json::to_string(&*interval_saver_chats.lock().unwrap()).unwrap();
+            if let Err(e) = tokio::fs::write("./chats.json", chats_ser).await {
+                eprintln!("WARNING: failed to autosave chats: {e}");
+            }
+        }
+    });
 
     let groq_token = std::env::var("GROQ_TOKEN").ok();
     let default_backend = groq_token.map_or_else(
@@ -221,15 +167,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
     () = teloxide::repl(bot, move |bot: Bot, msg: Message| {
         let ch = Arc::clone(&chats);
-        let openai_models = openai_models.clone();
-        let default_state = State::ChatDialogue {
-                backend: default_backend.clone(),
-                conversation: Conversation::default(),
-            };
+        let default_backend = default_backend.clone();
         async move {
             let chat_id = msg.chat.id;
-            let state = ch.lock().unwrap().get(&chat_id).cloned().unwrap_or_else(|| default_state.clone());
-            match handle_msg(&bot, msg, openai_models, state).await {
+            let state = ch.lock().unwrap().get(&chat_id).cloned().unwrap_or_default();
+            match handle_msg(&bot, msg, state, &default_backend.clone()).await {
                     Ok(new_state) => {
                         ch.lock().unwrap().insert(chat_id, new_state);
                     },
@@ -244,8 +186,62 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // Save chats
-    let chats_ser = serde_json::to_string_pretty(&*my_chats.lock().unwrap()).unwrap();
+    let chats_ser = serde_json::to_string_pretty(&*final_save_chats.lock().unwrap()).unwrap();
     std::fs::write("chats.json", chats_ser).unwrap();
 
     Ok(())
 }
+
+//// Start command, pasted here jic I need the keyboard code and stuff later
+//// Yes I know this is messy, but... eh
+//if let Some(command) = text.strip_prefix("/start") {
+//    let command = command.strip_prefix(' ').unwrap_or(command);
+//    let parts: Vec<&str> = command.split_whitespace().collect();
+//    match parts[..] {
+//        ["openai", model] => {
+//            if models.contains(&model.to_string()) {
+//                state = State::ChatDialogue {
+//                    backend: Backend::OpenAI(ai::openai::OpenAIModel::new(
+//                        OPENAI_API_URL.to_string(),
+//                        model.to_string(),
+//                    )),
+//                    conversation: Conversation::default(),
+//                };
+//                bot.send_message(
+//                    chat_id,
+//                    format!("Chosen model {model}! You can start chatting now."),
+//                )
+//                .reply_markup(ReplyMarkup::kb_remove())
+//                .await?;
+//                bot.set_my_commands(
+//                    COMMANDS
+//                        .iter()
+//                        .map(|(cmd, desc)| BotCommand::new(*cmd, *desc)),
+//                )
+//                .await?;
+//            }
+//        }
+//        _ => {
+//            bot.send_message(chat_id, "Please choose a model")
+//                .reply_markup(models_to_options(models.clone()))
+//                .await?;
+//        }
+//    }
+//    return Ok(state);
+//}
+//// Not a /start command
+//fn models_to_options(openai_models: Vec<String>) -> teloxide::types::ReplyMarkup {
+//    let keyboard = openai_models
+//        .into_iter()
+//        .map(|model| {
+//            vec![teloxide::types::KeyboardButton::new(format!(
+//                "/start openai {model}"
+//            ))]
+//        })
+//        .collect::<Vec<_>>();
+//
+//    teloxide::types::KeyboardMarkup::new(keyboard)
+//        .one_time_keyboard(true)
+//        .into()
+//}
+//
