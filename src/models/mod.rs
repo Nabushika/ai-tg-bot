@@ -44,7 +44,7 @@ impl ChatMessage {
 // new model with characters n conversations n stuff
 
 // TODO: probably shouldn't have to be `Clone`
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct UserState {
     //pub backend: Option<Backend>,
     pub conversations: Vec<Conversation>,
@@ -59,21 +59,24 @@ impl UserState {
             .and_then(|idx| self.conversations.get_mut(idx))
     }
     pub fn get_or_create_conversation(&mut self) -> &mut Conversation {
-        let idx = self
-            .current_conversation
-            .unwrap_or(self.conversations.len());
-        self.current_conversation = Some(idx);
-        self.conversations.get_mut(idx).unwrap()
+        match self.current_conversation {
+            Some(idx) if idx < self.conversations.len() => self.conversations.get_mut(idx).unwrap(),
+            _ => {
+                self.current_conversation = Some(self.conversations.len());
+                self.conversations.push(Conversation::default());
+                self.conversations.last_mut().unwrap()
+            }
+        }
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
+#[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub enum UIState {
     #[default]
     Chatting,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Conversation {
     pub name: String,
     pub messages: Vec<ChatMessage>,

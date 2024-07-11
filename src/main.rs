@@ -81,14 +81,7 @@ async fn handle_msg(
         return Ok(state);
     }
     // Non-command message, handle here
-    let Some(conversation) = state.get_current_conversation() else {
-        bot.send_message(
-            chat_id,
-            "Please start a conversation with /start before messaging!",
-        )
-        .await?;
-        return Ok(state);
-    };
+    let conversation = state.get_or_create_conversation();
     let named_message = if group_chat {
         format!("{username}: {text}")
     } else {

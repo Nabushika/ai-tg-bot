@@ -47,6 +47,7 @@ pub fn handle_command<'a>(msg: &str, state: &'a mut UserState) -> Result<Command
         "Command `{cmd}` requires you to be in a conversation!"
     )));
     match cmd {
+        "/debug" => Ok(CommandResult::ReplyToUser(format!("state: {state:#?}"))),
         "/reset" => {
             let Some(conversation) = state.get_current_conversation() else {
                 return failed_command;
@@ -78,11 +79,12 @@ pub fn handle_command<'a>(msg: &str, state: &'a mut UserState) -> Result<Command
             let conversations = state
                 .conversations
                 .iter()
-                .map(|f| format!("{f}"))
+                .enumerate()
+                .map(|(i, f)| format!("{i}: {f}"))
                 .collect::<Vec<_>>()
                 .join("\n\n");
             Ok(CommandResult::ReplyToUser(format!(
-                "Current conversations: {conversations}"
+                "Current conversations:\n{conversations}"
             )))
         }
         "/system" => {
