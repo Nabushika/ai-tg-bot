@@ -68,15 +68,14 @@ async fn handle_msg(
                 bot.send_message(chat_id, &result).await?;
                 println!("BOT: {result}");
                 conversation.messages.push(ChatMessage::new(result, None));
-            }
-            CommandResult::GenerateDescription(conversation) => {
-                let result =
-                    typing_while(bot, chat_id, default_backend.description(conversation)).await?;
-                bot.send_message(chat_id, format!("New conversation description: {result}"))
-                    .await?;
-                println!("New description for chat {}: {}", conversation.name, result);
-                conversation.description = Some(result);
-            }
+            } //CommandResult::GenerateDescription(conversation) => {
+              //    let result =
+              //        typing_while(bot, chat_id, default_backend.description(conversation)).await?;
+              //    bot.send_message(chat_id, format!("New conversation description: {result}"))
+              //        .await?;
+              //    println!("New description for chat {}: {}", conversation.name, result);
+              //    conversation.description = Some(result);
+              //}
         }
         return Ok(state);
     }
@@ -90,6 +89,10 @@ async fn handle_msg(
     conversation
         .messages
         .push(ChatMessage::new(named_message, Some(username)));
+    if group_chat && !default_backend.my_turn(conversation).await? {
+        println!("Bot chose not to reply");
+        return Ok(state);
+    }
     let response = typing_while(bot, chat_id, default_backend.reply(conversation)).await?;
     conversation
         .messages

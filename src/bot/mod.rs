@@ -26,17 +26,17 @@ const COMMANDS: &[(&str, &str)] = &[
     ("system", "Set the system message for current conversation"),
     //("start", "Start a new conversation. Requires model name."),
     ("help", "Show a list of commands and brief descriptions"),
-    ("rename", "Rename conversation"),
-    ("desc", "Update description of conversation"),
-    ("new", "Start a new conversation"),
-    ("list", "List all conversations"),
+    //("rename", "Rename conversation"),
+    //("desc", "Update description of conversation"),
+    //("new", "Start a new conversation"),
+    //("list", "List all conversations"),
 ];
 
 pub enum CommandResult<'a> {
     //DoNothing,
     RegenerateLastMessage(&'a mut Conversation),
     ReplyToUser(String),
-    GenerateDescription(&'a mut Conversation),
+    //GenerateDescription(&'a mut Conversation),
 }
 
 // Does not handle /start
@@ -56,37 +56,37 @@ pub fn handle_command<'a>(msg: &str, state: &'a mut UserState) -> Result<Command
             conversation.system = None;
             Ok(CommandResult::ReplyToUser("Conversation reset!".into()))
         }
-        "/rename" => {
-            let conversation = state.get_or_create_conversation();
-            rest.clone_into(&mut conversation.name);
-            Ok(CommandResult::ReplyToUser(format!(
-                "Set current conversation name to \"{rest}\"!"
-            )))
-        }
-        "/desc" => {
-            let Some(conversation) = state.get_current_conversation() else {
-                return failed_command;
-            };
-            Ok(CommandResult::GenerateDescription(conversation))
-        }
-        "/new" => {
-            state.current_conversation = None;
-            Ok(CommandResult::ReplyToUser(
-                "New conversation started".into(),
-            ))
-        }
-        "/list" => {
-            let conversations = state
-                .conversations
-                .iter()
-                .enumerate()
-                .map(|(i, f)| format!("{i}: {f}"))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            Ok(CommandResult::ReplyToUser(format!(
-                "Current conversations:\n{conversations}"
-            )))
-        }
+        //"/rename" => {
+        //    let conversation = state.get_or_create_conversation();
+        //    rest.clone_into(&mut conversation.name);
+        //    Ok(CommandResult::ReplyToUser(format!(
+        //        "Set current conversation name to \"{rest}\"!"
+        //    )))
+        //}
+        //"/desc" => {
+        //    let Some(conversation) = state.get_current_conversation() else {
+        //        return failed_command;
+        //    };
+        //    Ok(CommandResult::GenerateDescription(conversation))
+        //}
+        //"/new" => {
+        //    state.current_conversation = None;
+        //    Ok(CommandResult::ReplyToUser(
+        //        "New conversation started".into(),
+        //    ))
+        //}
+        //"/list" => {
+        //    let conversations = state
+        //        .conversations
+        //        .iter()
+        //        .enumerate()
+        //        .map(|(i, f)| format!("{i}: {f}"))
+        //        .collect::<Vec<_>>()
+        //        .join("\n\n");
+        //    Ok(CommandResult::ReplyToUser(format!(
+        //        "Current conversations:\n{conversations}"
+        //    )))
+        //}
         "/system" => {
             let Some(conversation) = state.get_current_conversation() else {
                 return failed_command;

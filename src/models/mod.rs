@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::Model;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub enum Backend {
     //Ollama(String),
     OpenAI(crate::ai::openai::OpenAIModel),
@@ -17,6 +17,11 @@ impl Model for Backend {
     async fn description(&self, conversation: &Conversation) -> anyhow::Result<String> {
         match self {
             Backend::OpenAI(model) => model.description(conversation).await,
+        }
+    }
+    async fn my_turn(&self, conversation: &Conversation) -> anyhow::Result<bool> {
+        match self {
+            Backend::OpenAI(model) => model.my_turn(conversation).await,
         }
     }
 }

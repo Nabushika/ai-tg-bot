@@ -7,11 +7,9 @@ use async_openai::types::{
     ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs,
 };
 use async_openai::{config::OpenAIConfig, Client};
-use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct OpenAIModel {
-    #[serde(with = "client_ser")]
     client: Client<OpenAIConfig>,
     model: String,
 }
@@ -92,31 +90,18 @@ impl Model for OpenAIModel {
         self.reply_with_system(Some(DESCRIPTION_SYSTEM_MSG), &conversation.messages)
             .await
     }
-}
 
-mod client_ser {
-    use async_openai::config::Config;
-
-    use super::{Client, OpenAIConfig};
-
-    pub fn serialize<S>(client: &Client<OpenAIConfig>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use secrecy::ExposeSecret;
-        let config = client.config();
-        let to_ser = (config.api_base(), config.api_key().expose_secret());
-        serde::Serialize::serialize(&to_ser, serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Client<OpenAIConfig>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let (api_base, api_key): (&str, &str) = serde::Deserialize::deserialize(deserializer)?;
-        let config = OpenAIConfig::default()
-            .with_api_base(api_base)
-            .with_api_key(api_key);
-        Ok(Client::with_config(config))
+    async fn my_turn(&self, conversation: &Conversation) -> anyhow::Result<bool> {
+        const MY_TURN_SYSTEM_MSG: &str = "Read the conversation below and reply with one word: YES if it is your turn to respond, and NO if it is not your turn to respond.";
+        let reply = self
+            .reply_with_system(Some(MY_TURN_SYSTEM_MSG), &conversation.messages)
+            .await?;
+        match reply.as_str() {
+            "YES" => Ok(true),
+            "NO" => Ok(false),
+            _ => Err(anyhow::anyhow!(
+                "Got non YES/NO answer for is_my_turn: {reply}"
+            )),
+        }
     }
 }
